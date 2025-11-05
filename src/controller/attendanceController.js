@@ -25,9 +25,11 @@ const diffInMinutes = (later, earlier) =>
 /* -------------------------------------------------------------------------- */
 /* ✅ CLOCK-IN FUNCTION */
 /* -------------------------------------------------------------------------- */
+
 export const clockIn = async (req, res) => {
   try {
     const { employeeId, companyId } = req.body;
+
     if (!employeeId || !companyId)
       return res
         .status(400)
@@ -39,14 +41,17 @@ export const clockIn = async (req, res) => {
 
     const { start, end } = getTodayRange();
 
+    // ✅ Define now (IST-based) before using it
+    const now = moment().tz("Asia/Kolkata");
+    const nowDate = now.toDate();
     const dayOfWeek = now.day(); // 0 = Sunday, 1 = Monday, ...
 
-// 🛑 If Sunday, stop here
-if (dayOfWeek === 0) {
-  return res.status(400).json({
-    message: "Today is Sunday (Holiday). Clock-in not required.",
-  });
-}
+    // 🛑 If Sunday, stop here
+    if (dayOfWeek === 0) {
+      return res.status(400).json({
+        message: "Today is Sunday (Holiday). Clock-in not required.",
+      });
+    }
 
     // Check if already clocked in today
     const existingRecord = await Attendance.findOne({
@@ -57,9 +62,6 @@ if (dayOfWeek === 0) {
     if (existingRecord)
       return res.status(400).json({ message: "Already clocked in for today." });
 
-    // ✅ Always use IST-based time for logic
-    const now = moment().tz("Asia/Kolkata").toDate();
-
     // Shift boundaries (IST)
     const today = moment().tz("Asia/Kolkata").startOf("day");
     const clockInAllow = today.clone().hour(9).minute(35).toDate();
@@ -68,19 +70,20 @@ if (dayOfWeek === 0) {
     const lateEnd = today.clone().hour(12).minute(0).toDate();
     const halfDayEnd = today.clone().hour(14).minute(0).toDate();
 
-    // ✅ Correct logic order — no early or late clock-in
-    if (now < clockInAllow) {
+    // ✅ Validate clock-in time
+    if (nowDate < clockInAllow) {
       return res.status(400).json({
-        message: "Clock-in not allowed before 9:35 AM",
+        message: "Clock-in not allowed before 9:35 AM.",
       });
     }
 
-    if (now > halfDayEnd) {
+    if (nowDate > halfDayEnd) {
       return res.status(400).json({
         message: "Clock-in not allowed after 2:00 PM. Please contact admin.",
       });
     }
 
+    // Initialize attendance variables
     let status = "Present";
     let firstHalf = "Present";
     let secondHalf = "Present";
@@ -89,18 +92,18 @@ if (dayOfWeek === 0) {
     let isLate = false;
 
     // Attendance logic
-    if (clockInAllow <= now && now < shiftStart) {
+    if (clockInAllow <= nowDate && nowDate < shiftStart) {
       status = "Present";
       remarks = "On time (Present)";
-    } else if (now >= shiftStart && now <= graceEnd) {
+    } else if (nowDate >= shiftStart && nowDate <= graceEnd) {
       status = "Grace Present";
       remarks = "Within grace period (Present)";
-    } else if (now > graceEnd && now <= lateEnd) {
+    } else if (nowDate > graceEnd && nowDate <= lateEnd) {
       status = "Late";
       isLate = true;
-      lateMinutes = diffInMinutes(now, shiftStart);
+      lateMinutes = diffInMinutes(nowDate, shiftStart);
       remarks = `Late by ${lateMinutes} minutes (Still Present)`;
-    } else if (now > lateEnd && now <= halfDayEnd) {
+    } else if (nowDate > lateEnd && nowDate <= halfDayEnd) {
       status = "Half Day";
       firstHalf = "Absent";
       remarks = "Clocked in between 12:00–2:00 PM (Half Day)";
@@ -109,8 +112,8 @@ if (dayOfWeek === 0) {
     const attendance = new Attendance({
       employee: employeeId,
       company: companyId,
-      clockIn: now,
-      date: start, // ✅ keep UTC-based date for consistency
+      clockIn: nowDate,
+      date: start, // ✅ Keep UTC-based date for consistency
       status,
       firstHalf,
       secondHalf,
@@ -120,6 +123,7 @@ if (dayOfWeek === 0) {
     });
 
     await attendance.save();
+
     return res
       .status(201)
       .json({ message: "Clock-in recorded successfully", attendance });
@@ -134,24 +138,29 @@ if (dayOfWeek === 0) {
 /* -------------------------------------------------------------------------- */
 /* ✅ CLOCK-OUT FUNCTION */
 /* -------------------------------------------------------------------------- */
+
 export const clockOut = async (req, res) => {
   try {
     const { employeeId, companyId } = req.body;
+
     if (!employeeId || !companyId)
       return res
         .status(400)
         .json({ message: "Employee and company are required." });
 
     const { start, end } = getTodayRange();
+
     const attendance = await Attendance.findOne({
       employee: employeeId,
       company: companyId,
       date: { $gte: start, $lte: end },
     });
+
     if (!attendance)
       return res
         .status(404)
         .json({ message: "No clock-in record found for today." });
+
     if (attendance.clockOut)
       return res.status(400).json({ message: "Already clocked out today." });
 
@@ -181,7 +190,7 @@ export const clockOut = async (req, res) => {
       attendance.status = "Half Day";
       attendance.remarks = `Worked ${workedHours} hrs — Half Day`;
     } else {
-      // ✅ Preserve late flag (minor enhancement)
+      // ✅ Preserve late flag
       if (attendance.isLate) {
         attendance.status = "Late";
         attendance.remarks = `Worked ${workedHours} hrs — Late Present`;
@@ -192,6 +201,7 @@ export const clockOut = async (req, res) => {
     }
 
     await attendance.save();
+
     return res
       .status(200)
       .json({ message: "Clock-out recorded successfully", attendance });
@@ -206,12 +216,13 @@ export const clockOut = async (req, res) => {
 /* -------------------------------------------------------------------------- */
 /* ✅ GET ALL ATTENDANCE RECORDS */
 /* -------------------------------------------------------------------------- */
+
 export const getAttendanceForAllEmployee = async (req, res) => {
   try {
     const attendanceRecords = await Attendance.find()
       .populate("employee", "fullName email role department")
       .populate("company", "name")
-      .select("-__v") // ✅ cleaner response
+      .select("-__v")
       .sort({ date: -1 });
 
     return res.status(200).json(attendanceRecords);
@@ -226,6 +237,7 @@ export const getAttendanceForAllEmployee = async (req, res) => {
 /* -------------------------------------------------------------------------- */
 /* ✅ EDIT ATTENDANCE */
 /* -------------------------------------------------------------------------- */
+
 export const editAttendance = async (req, res) => {
   try {
     const { attendanceId } = req.params;
@@ -259,6 +271,7 @@ export const editAttendance = async (req, res) => {
 /* -------------------------------------------------------------------------- */
 /* ✅ GET ATTENDANCE BY EMPLOYEE ID */
 /* -------------------------------------------------------------------------- */
+
 export const getAttendanceByEmployeeId = async (req, res) => {
   try {
     const { employeeId } = req.params;
@@ -270,9 +283,9 @@ export const getAttendanceByEmployeeId = async (req, res) => {
       .select("-__v");
 
     if (!attendanceRecords || attendanceRecords.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "No attendance records found for this employee" });
+      return res.status(404).json({
+        message: "No attendance records found for this employee",
+      });
     }
 
     return res
